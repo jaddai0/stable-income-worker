@@ -1,0 +1,20 @@
+{
+  "attempt_id": "att_exampleattempt01",
+  "state": "succeeded",
+  "worker": {
+    "backend": "mock",
+    "model_id": "stabilityai/stable-audio-3-medium",
+    "model_revision": "27b5a21b791b1b033d193a9e1e3ce78493f102f9",
+    "runtime_version": "test-worker/0",
+    "worker_process_id": "proc-1",
+    "jobs_served_by_process": 1
+  },
+  "measurements": {
+    "handler_total_s": 12.5,
+    "inference_s": 4,
+    "encode_s": 1,
+    "upload_s": 1,
+    "cold_process": false
+  },
+  "error": null
+}

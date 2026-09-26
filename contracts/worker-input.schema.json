@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stable-income.invalid/contracts/worker-input.schema.json",
+  "title": "RunPod job input (the value of \"input\" in POST /run)",
+  "description": "Deliberately content-free: no prompt, no seed, no storage location, no callback URL. The worker exchanges the capability for the generation parameters and a one-time upload URL at POST /internal/jobs/{job_id}/claim, so RunPod job records never hold customer prompts. The gateway base URL comes from worker environment, never from job input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "attempt", "capability"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "job_id": {
+      "type": "string",
+      "pattern": "^gen_[A-Za-z0-9_-]{16,64}$",
+      "description": "Opaque native job id; doubles as the public request id carried to RunPod."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "description": "Submission attempt number. At most one infrastructure retry exists (policy max_infrastructure_retries = 1)."
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 2048,
+      "description": "Signed execution capability: base64url(JSON payload) + '.' + base64url(HMAC-SHA256). Payload fields: v, job_id, attempt, ops (['claim','complete']), model, exp (unix seconds). Opaque to the worker."
+    },
+    "synthetic": {
+      "type": "boolean",
+      "default": false,
+      "description": "True only for explicitly metered qualification/benchmark jobs, never for health checks."
+    }
+  }
+}

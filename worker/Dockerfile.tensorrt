@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1.7
+# Optimized (TensorRT) worker image. Build from the repository root:
+#   docker buildx build --platform linux/amd64 -f worker/Dockerfile.tensorrt -t <ref> .
+# Contains the upstream TensorRT runtime scripts and tokenizer only: no engines, no weights,
+# no credentials. Engines are built offline for one GPU architecture and mounted at
+# SA3_TRT_MODELS_DIR with an engines.lock.json manifest (worker/src/backends/tensorrt_backend.py).
+#
+# Upstream pins tensorrt==10.15.1.29, which resolves to the CUDA 13 build, and installs the
+# newest torch (a CUDA 13 wheel). The whole image is therefore CUDA 13 and the RunPod host
+# driver must support CUDA 13.0. Engines MUST be built with this exact TensorRT version.
+
+FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2 AS upstream
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ARG UPSTREAM_COMMIT=779434a908193105335fd8d833418603625b2859
+RUN git clone --filter=blob:none https://github.com/Stability-AI/stable-audio-3 /src \
+ && git -C /src checkout --detach "${UPSTREAM_COMMIT}" \
+ && test "$(git -C /src rev-parse HEAD)" = "${UPSTREAM_COMMIT}" \
+ && echo "7794135caa3ea73918949c902a781cc61dab674a4b59c17d85931c77c1114cbd  /src/optimized/tensorRT/scripts/tokenizer.json" | sha256sum -c - \
+ && rm -rf /src/optimized/tensorRT/models /src/optimized/tensorRT/output
+
+FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_PROGRESS_BARS=1
+
+# Ubuntu 24.04 ships Python 3.12, which the TensorRT lock targets.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /usr/local/bin/uv
+
+WORKDIR /app/worker
+COPY worker/tensorrt/requirements.lock ./tensorrt/requirements.lock
+RUN uv venv /app/worker/.venv --python /usr/bin/python3.12 \
+ && uv pip install --python /app/worker/.venv/bin/python --require-hashes --no-deps \
+      --extra-index-url https://pypi.nvidia.com --index-strategy unsafe-best-match \
+      -r tensorrt/requirements.lock
+
+COPY --from=upstream /src/optimized/tensorRT /opt/sa3/optimized/tensorRT
+COPY contracts /app/contracts
+COPY worker/src /app/worker/src
+
+ENV PATH=/app/worker/.venv/bin:$PATH \
+    SA3_BACKEND=tensorrt \
+    SA3_CONTRACTS_DIR=/app/contracts \
+    SA3_TRT_SCRIPTS=/opt/sa3/optimized/tensorRT/scripts \
+    SA3_TRT_EXPECTED_ARCH=sm_89
+
+LABEL org.opencontainers.image.title="stable-income-worker-tensorrt" \
+      org.opencontainers.image.source="https://github.com/jaddai0/stable-income" \
+      io.stable-income.upstream-commit="779434a908193105335fd8d833418603625b2859" \
+      io.stable-income.tensorrt="10.15.1.29 (CUDA 13)" \
+      io.stable-income.mp3-encoder="lameenc 1.8.4 / LAME 3.100 (LGPL-3.0-or-later)" \
+      io.stable-income.flac-encoder="soundfile 0.14.0 / libsndfile (LGPL-2.1) + libFLAC (BSD-3-Clause)"
+
+# Fail the build if the bundled libsndfile cannot write FLAC (per-request output format).
+RUN python -c "import soundfile; assert 'FLAC' in soundfile.available_formats() and 'PCM_16' in soundfile.available_subtypes('FLAC')"
+
+CMD ["python", "-u", "/app/worker/src/handler.py"]

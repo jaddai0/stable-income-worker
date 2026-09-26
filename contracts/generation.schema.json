@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stable-income.invalid/contracts/generation.schema.json",
+  "title": "Native generation request (POST /v1/audio/generations)",
+  "description": "Project-owned native API contract, version 1. Not an OpenAI or OpenRouter schema. Unknown fields are rejected. The prompt ceiling here is the policy ceiling; the gateway must also enforce the qualified tokenizer limit once measured (config/model-profile.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "prompt"
+  ],
+  "properties": {
+    "model": {
+      "const": "stable-audio-3-medium"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Measured in Unicode code points, not UTF-16 units. Never truncated; overlong prompts are rejected."
+    },
+    "duration_seconds": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 380,
+      "default": 60
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Optional. When omitted the gateway chooses one, persists it before submission, and never changes it on infrastructure retry."
+    },
+    "output_format": {
+      "enum": [
+        "mp3",
+        "wav",
+        "flac"
+      ],
+      "default": "mp3",
+      "description": "Per request. mp3 = 192 kbit/s CBR (default); wav = PCM16; flac = lossless 16-bit. All 44.1 kHz stereo. Owner decision 2026-09-26."
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stable-income.invalid/contracts/worker-result.schema.json",
+  "title": "RunPod job output returned by the handler",
+  "description": "Metadata-only recovery path; target under 32 KiB (policy max_runpod_result_manifest_bytes). Never contains audio, prompts, URLs or credentials. The gateway reconciles it against the completion callback; only one path may produce the billing event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "attempt", "status"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "job_id": { "type": "string" },
+    "attempt": { "type": "integer" },
+    "attempt_id": { "type": ["string", "null"] },
+    "fencing_token": { "type": ["integer", "null"] },
+    "status": {
+      "enum": ["succeeded", "failed", "claim_rejected", "completion_unconfirmed"],
+      "description": "claim_rejected = the gateway refused the claim, no generation ran. completion_unconfirmed = audio uploaded but the callback did not get an answer; the gateway must reconcile from this manifest."
+    },
+    "output": { "$ref": "internal-api.schema.json#/$defs/OutputMetadata" },
+    "error": { "$ref": "internal-api.schema.json#/$defs/WorkerError" },
+    "worker": { "$ref": "internal-api.schema.json#/$defs/WorkerIdentity" },
+    "measurements": { "$ref": "internal-api.schema.json#/$defs/Measurements" }
+  }
+}

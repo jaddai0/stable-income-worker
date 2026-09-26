@@ -1,0 +1,467 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stable-income.invalid/contracts/internal-api.schema.json",
+  "title": "Worker <-> gateway internal API, version 1",
+  "description": "Both internal routes require two credentials: 'Authorization: Bearer <WORKER_TOKEN>' (worker privilege, separate from client and admin keys) and 'X-Execution-Capability: <capability from worker input>'. The capability's job_id and attempt must match the route and body. Every request is idempotent: a repeated claim by the same holder returns the same claim; a repeated completion with the same fencing token returns the already-committed outcome without a second billing event.",
+  "$defs": {
+    "ClaimRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "runpod_job_id",
+        "worker"
+      ],
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "runpod_job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerIdentity"
+        }
+      }
+    },
+    "ClaimResponse": {
+      "description": "200 = claim granted (or re-granted to the same runpod_job_id). 409 = another holder has a live claim or the job is terminal: the worker must return without generating. 410 = job expired/cancelled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "attempt",
+        "attempt_id",
+        "fencing_token",
+        "claim_expires_at",
+        "generation",
+        "upload"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^att_[A-Za-z0-9_-]{8,64}$"
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonically increasing per job across all claims. Completion with a lower token is rejected as stale."
+        },
+        "claim_expires_at": {
+          "type": "integer",
+          "description": "Unix seconds."
+        },
+        "generation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "prompt",
+            "duration_seconds",
+            "seed",
+            "output_format"
+          ],
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "duration_seconds": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 380
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "output_format": {
+              "enum": [
+                "mp3",
+                "wav",
+                "flac"
+              ]
+            }
+          }
+        },
+        "upload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "url",
+            "headers",
+            "object_key",
+            "expires_at",
+            "max_bytes"
+          ],
+          "properties": {
+            "method": {
+              "const": "PUT"
+            },
+            "url": {
+              "type": "string",
+              "description": "Short-lived presigned URL for exactly one immutable per-attempt object. Never logged."
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "object_key": {
+              "type": "string",
+              "description": "<env>/jobs/<job_id>/<attempt_id>/audio.<ext>; chosen by the service."
+            },
+            "expires_at": {
+              "type": "integer"
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "CompleteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "fencing_token",
+        "outcome",
+        "worker",
+        "measurements"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outcome": {
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
+        },
+        "output": {
+          "$ref": "#/$defs/OutputMetadata"
+        },
+        "error": {
+          "$ref": "#/$defs/WorkerError"
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerIdentity"
+        },
+        "measurements": {
+          "$ref": "#/$defs/Measurements"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "output"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "error"
+            ]
+          }
+        }
+      ]
+    },
+    "CompleteResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "accepted",
+        "state"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "boolean",
+          "description": "False when the completion was stale or the job already had a winner; the worker must not retry."
+        },
+        "state": {
+          "type": "string"
+        }
+      }
+    },
+    "OutputMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_key",
+        "content_type",
+        "encoding",
+        "bytes",
+        "sha256",
+        "duration_seconds",
+        "sample_rate_hz",
+        "channels"
+      ],
+      "properties": {
+        "object_key": {
+          "type": "string"
+        },
+        "content_type": {
+          "enum": [
+            "audio/mpeg",
+            "audio/wav",
+            "audio/flac"
+          ]
+        },
+        "encoding": {
+          "enum": [
+            "mp3_cbr_192k",
+            "wav_pcm16",
+            "flac_16"
+          ]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sample_rate_hz": {
+          "const": 44100
+        },
+        "channels": {
+          "const": 2
+        },
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "near_silent",
+              "clipping",
+              "static_suspect"
+            ]
+          },
+          "description": "Flags, not rejections. Quiet ambience is allowed."
+        }
+      }
+    },
+    "WorkerError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "validation",
+            "license",
+            "missing_artifact",
+            "runtime_mismatch",
+            "unsupported_engine",
+            "deterministic_runtime",
+            "oom",
+            "invalid_output",
+            "upload_failed",
+            "gateway_unreachable",
+            "timeout",
+            "internal"
+          ]
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "True only for transient infrastructure failures (upload_failed, gateway_unreachable, timeout, internal)."
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Sanitized. Never contains the prompt, URLs, tokens or stack traces."
+        }
+      }
+    },
+    "WorkerIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "model_id",
+        "model_revision",
+        "runtime_version"
+      ],
+      "properties": {
+        "backend": {
+          "enum": [
+            "pytorch",
+            "tensorrt",
+            "mock"
+          ]
+        },
+        "model_id": {
+          "const": "stabilityai/stable-audio-3-medium"
+        },
+        "model_revision": {
+          "type": "string"
+        },
+        "runtime_version": {
+          "type": "string",
+          "description": "Project worker version + image digest when known."
+        },
+        "engine_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gpu_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compute_capability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cuda_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torch_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tensorrt_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worker_process_id": {
+          "type": "string",
+          "description": "Random per process; proves repeated jobs reused one loaded model."
+        },
+        "jobs_served_by_process": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Seconds unless noted. Null when a stage did not run.",
+      "properties": {
+        "process_init_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Only on the first job of a process."
+        },
+        "model_load_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "claim_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "inference_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "decode_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "encode_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "upload_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "handler_total_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "peak_vram_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "process_rss_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cold_process": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

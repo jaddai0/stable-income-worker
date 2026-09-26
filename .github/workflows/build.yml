@@ -1,0 +1,141 @@
+name: build-worker-images
+
+# Builds the worker images on GitHub-hosted amd64 runners and pushes them to
+# PUBLIC ghcr.io/jaddai0 packages (owner decision 2026-09-26). Images carry no
+# model weights (Runpod cached models supply them), no TensorRT engines (they
+# derive from licensed weights and stay private) and no secrets. The build fails
+# before pushing if a scan finds any of those.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: Which image to build
+        type: choice
+        options: [pytorch, tensorrt, both]
+        default: pytorch
+  push:
+    tags:
+      - "worker-v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          choice="${{ inputs.backend || 'both' }}"
+          if [ "$choice" = both ]; then echo 'matrix=["pytorch","tensorrt"]' >> "$GITHUB_OUTPUT";
+          else echo "matrix=[\"$choice\"]" >> "$GITHUB_OUTPUT"; fi
+
+  build:
+    needs: select
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: ${{ fromJSON(needs.select.outputs.matrix) }}
+    env:
+      IMAGE: ghcr.io/jaddai0/stable-income-worker-${{ matrix.backend }}
+      LOCAL: local/stable-income-worker-${{ matrix.backend }}:scan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require the Dockerfile
+        run: |
+          test -f "worker/Dockerfile.${{ matrix.backend }}" || { echo "worker/Dockerfile.${{ matrix.backend }} missing"; exit 1; }
+
+      - name: Free runner disk (CUDA images are large)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af > /dev/null
+          df -h /
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Stable Audio 3 Medium worker (${{ matrix.backend }}); no weights, no secrets
+            org.opencontainers.image.licenses=NOASSERTION
+
+      - name: Build (loaded locally for scanning; not pushed yet)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          # Repository root: the Dockerfiles COPY worker/... and contracts/, and BuildKit applies
+          # worker/Dockerfile.<backend>.dockerignore (a root-relative allow-list) to this context.
+          context: .
+          file: worker/Dockerfile.${{ matrix.backend }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.LOCAL }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Scan image history and config for secrets
+        run: |
+          set -euo pipefail
+          docker history --no-trunc --format '{{.CreatedBy}}' "$LOCAL" > history.txt
+          docker inspect "$LOCAL" > inspect.json
+          pattern='hf_[A-Za-z0-9]{30,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|rpa_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|HF_TOKEN=[^ "]+|HUGGING_FACE_HUB_TOKEN=[^ "]+|RUNPOD_API_KEY=[^ "]+'
+          if grep -Eq "$pattern" history.txt inspect.json; then
+            echo "::error::secret-like value in image history or config"; exit 1
+          fi
+
+      - name: Scan image filesystem (secrets, weights, engines)
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "$LOCAL" -c '
+            fail=0
+            for f in /root/.cache/huggingface/token /root/.huggingface/token /root/.netrc /root/.docker/config.json; do
+              [ -e "$f" ] && { echo "forbidden file: $f"; fail=1; }
+            done
+            big=$(find / -xdev \( -name "*.safetensors" -o -name "*.ckpt" -o -name "*.pt" -o -name "*.pth" -o -name "*.bin" -o -name "*.gguf" -o -name "*.trt" -o -name "*.engine" -o -name "*.plan" -o -name "*.onnx" \) -size +20M 2>/dev/null | grep -v "^/proc" || true)
+            [ -n "$big" ] && { echo "weights or engines baked into a PUBLIC image:"; echo "$big"; fail=1; }
+            exit $fail'
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            ghcr.io/trufflesecurity/trufflehog:3.97.9 docker --image "docker://$LOCAL" --no-update --fail --results=verified,unknown
+
+      - name: Push and record digest
+        id: push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag "$LOCAL" "$tag"
+            docker push "$tag" > /dev/null
+          done <<< "$TAGS"
+          first=$(head -n1 <<< "$TAGS")
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$first")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          printf '{"backend":"%s","image":"%s","git_sha":"%s","built_at":"%s"}\n' \
+            "${{ matrix.backend }}" "$digest" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > digest-${{ matrix.backend }}.json
+          echo "### ${{ matrix.backend }}: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Put this digest in infra/environments/<env>.yaml. First push of a package: set its visibility to Public in the package settings (docs/deployment.md)." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.backend }}
+          path: digest-${{ matrix.backend }}.json

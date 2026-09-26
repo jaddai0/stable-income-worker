@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1.7
+# Reference (PyTorch) worker image. Build from the repository root:
+#   docker buildx build --platform linux/amd64 -f worker/Dockerfile.pytorch -t <ref> .
+# Contains no model weights and no credentials. Weights arrive at runtime through RunPod's
+# cached-model volume and are verified against the pinned revision (worker/src/artifacts.py).
+
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04@sha256:63a18dd805367dacfb077aeced8384ab2fb569598ec5f5f5220c3f90a5c23650
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_PROGRESS_BARS=1
+
+# Ubuntu 22.04's python3.10 matches upstream's .python-version. git is needed to install the
+# pinned upstream commit; curl fetches the flash-attn wheel.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3.10 python3.10-venv git curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /usr/local/bin/uv
+
+# Dependency layers first so code-only changes reuse them.
+WORKDIR /app/worker
+COPY worker/pyproject.toml worker/uv.lock ./
+RUN uv sync --frozen --no-dev --extra pytorch --no-install-project --python /usr/bin/python3.10
+
+# Flash Attention 2 is mandatory for Medium (a missing or broken install yields static with
+# exit code 0). Prebuilt wheel documented by upstream, verified by the sha256 GitHub publishes
+# for the release asset (mjun0812/flash-attention-prebuild-wheels v0.7.16, retrieved 2026-09-26).
+ARG FLASH_ATTN_WHEEL=flash_attn-2.6.3+cu126torch2.7-cp310-cp310-linux_x86_64.whl
+ARG FLASH_ATTN_SHA256=85909aa24df69b530111cde4c878bb866538211911af46c21676ef48437c0307
+RUN curl -fsSL -o "/tmp/${FLASH_ATTN_WHEEL}" \
+      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/${FLASH_ATTN_WHEEL}" \
+ && echo "${FLASH_ATTN_SHA256}  /tmp/${FLASH_ATTN_WHEEL}" | sha256sum -c - \
+ && uv pip install --python /app/worker/.venv/bin/python --no-deps "/tmp/${FLASH_ATTN_WHEEL}" \
+ && rm -f "/tmp/${FLASH_ATTN_WHEEL}"
+
+COPY contracts /app/contracts
+COPY worker/src /app/worker/src
+
+ENV PATH=/app/worker/.venv/bin:$PATH \
+    SA3_BACKEND=pytorch \
+    SA3_CONTRACTS_DIR=/app/contracts \
+    SA3_HF_CACHE=/runpod-volume/huggingface-cache/hub
+
+LABEL org.opencontainers.image.title="stable-income-worker-pytorch" \
+      org.opencontainers.image.source="https://github.com/jaddai0/stable-income" \
+      io.stable-income.upstream-commit="779434a908193105335fd8d833418603625b2859" \
+      io.stable-income.model-revision="27b5a21b791b1b033d193a9e1e3ce78493f102f9" \
+      io.stable-income.mp3-encoder="lameenc 1.8.4 / LAME 3.100 (LGPL-3.0-or-later)" \
+      io.stable-income.flac-encoder="soundfile 0.14.0 / libsndfile (LGPL-2.1) + libFLAC (BSD-3-Clause)"
+
+# Fail the build if the bundled libsndfile cannot write FLAC (per-request output format).
+RUN python -c "import soundfile; assert 'FLAC' in soundfile.available_formats() and 'PCM_16' in soundfile.available_subtypes('FLAC')"
+
+CMD ["python", "-u", "/app/worker/src/handler.py"]

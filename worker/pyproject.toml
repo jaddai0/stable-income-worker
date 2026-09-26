@@ -1,0 +1,53 @@
+[project]
+name = "stable-income-worker"
+version = "0.1.0"
+description = "RunPod Serverless worker for Stable Audio 3 Medium (native service, see HANDOFF.md section 6)"
+requires-python = ">=3.10,<3.13"
+# Base dependencies: everything the handler, encoder, uploader and claim client need.
+# GPU backends are extras so the contract/unit tests run on a Mac without CUDA or torch.
+dependencies = [
+    "runpod==1.12.0",
+    "requests==2.34.2",
+    "numpy>=2.2.6,<2.3",
+    "jsonschema==4.26.0",
+    "lameenc==1.8.4",
+    "soundfile==0.14.0",
+    "tokenizers==0.23.2",
+]
+
+[project.optional-dependencies]
+# Reference backend. torch/torchaudio come from the CUDA 12.6 index on linux x86_64
+# (upstream stable-audio-3 pins torch==2.7.1). flash-attn is NOT listed here: it is
+# installed in Dockerfile.pytorch from a pinned, hash-checked prebuilt wheel because a
+# broken flash-attn yields static noise with exit code 0 (upstream README).
+pytorch = [
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
+    "stable-audio-3 @ git+https://github.com/Stability-AI/stable-audio-3@779434a908193105335fd8d833418603625b2859",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+
+[tool.uv]
+# The pytorch extra only needs to resolve for the linux/amd64 image and for the Mac dev env.
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+torchaudio = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-p no:cacheprovider"

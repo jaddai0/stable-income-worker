@@ -1,0 +1,11 @@
+# BuildKit reads <Dockerfile>.dockerignore for a build started from the repository root.
+# Allow-list: only the contracts and the worker sources, lock and project file enter the
+# context, so no .env, weights, audio or local venv can be copied into a public image.
+*
+!contracts/*.json
+!worker/pyproject.toml
+!worker/uv.lock
+!worker/src/**
+!worker/tensorrt/requirements.lock
+**/__pycache__
+**/*.pyc
