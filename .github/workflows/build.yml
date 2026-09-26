@@ -113,8 +113,17 @@ jobs:
             big=$(find / -xdev \( -name "*.safetensors" -o -name "*.ckpt" -o -name "*.pt" -o -name "*.pth" -o -name "*.bin" -o -name "*.gguf" -o -name "*.trt" -o -name "*.engine" -o -name "*.plan" -o -name "*.onnx" \) -size +20M 2>/dev/null | grep -v "^/proc" || true)
             [ -n "$big" ] && { echo "weights or engines baked into a PUBLIC image:"; echo "$big"; fail=1; }
             exit $fail'
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            ghcr.io/trufflesecurity/trufflehog:3.97.9 docker --image "docker://$LOCAL" --no-update --fail --results=verified,unknown
+          # Scanning the whole multi-GB image (CUDA, torch) got TruffleHog OOM-killed on the
+          # runner (2026-09-26). Secrets can only enter through what this project adds: the
+          # image history/config (scanned in the previous step) and the files copied in below.
+          # Extract exactly those paths (minus the third-party virtualenv) and scan them.
+          mkdir -p "$RUNNER_TEMP/scan"
+          docker run --rm --entrypoint sh "$LOCAL" -c \
+            'tar -C / --exclude=app/worker/.venv -cf - app root etc/environment $( [ -d /opt/sa3 ] && echo opt/sa3 ) 2>/dev/null' \
+            | tar -x -C "$RUNNER_TEMP/scan"
+          du -sh "$RUNNER_TEMP/scan"
+          docker run --rm -v "$RUNNER_TEMP/scan:/scan:ro" \
+            ghcr.io/trufflesecurity/trufflehog:3.97.9 filesystem /scan --no-update --fail --results=verified,unknown
 
       - name: Push and record digest
         id: push

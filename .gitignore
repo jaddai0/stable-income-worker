@@ -19,3 +19,4 @@ node_modules/
 *.wav
 *.mp3
 .claude/
+*.env
