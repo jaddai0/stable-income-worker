@@ -1,0 +1,23 @@
+{
+  "arch": "sm_89",
+  "tensorrt_version": "10.15.1.29",
+  "precision": "fp16",
+  "source_model_revision": "27b5a21b791b1b033d193a9e1e3ce78493f102f9",
+  "onnx_sources": {
+    "repo": "stabilityai/stable-audio-3-optimized",
+    "t5gemma": "da6edc54ddba10bfd79a077102ded687f80e882b:onnx/t5gemma/encoder.onnx",
+    "sa3-m": "da6edc54ddba10bfd79a077102ded687f80e882b:onnx/sa3-m (dit_fp16)",
+    "same-l-decoder": "74cd2b74196f7023a49b12f0f01a117f08cf30c0:onnx/same-l/dec_fp16_chunkable_limiter.onnx"
+  },
+  "built_on": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "pod": "89exl83ei78ozh",
+    "date": "2026-09-26",
+    "swa_plugin": "aot (default)"
+  },
+  "files": {
+    "t5gemma/t5gemma_fp16.trt": "e93b9971dfccb75fae96eea293ac3bc27746a2cd66e4508783e9933ceafefb1b",
+    "sa3-m/dit_fp16.trt": "fc473c3e5004d968b6a92b83beda0ca952c560e7e251e620411901b6e65e91d5",
+    "same-l/dec_fp16_chunkable_limiter.trt": "e16d55d58558a73c210140aedcf788160715f56bd590a2061f142a5323376c20"
+  }
+}

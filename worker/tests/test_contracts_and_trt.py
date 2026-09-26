@@ -121,7 +121,9 @@ def test_real_engine_lock_from_the_4090_pod_passes_manifest_check(tmp_path):
     import shutil
     from pathlib import Path
 
-    lock = Path(__file__).resolve().parents[2] / "benchmarks/results/2026-09-26-tensorrt-4090/engines.lock.json"
+    # Copy of benchmarks/results/2026-09-26-tensorrt-4090/engines.lock.json, kept inside worker/
+    # so the test also runs in the public worker repo.
+    lock = Path(__file__).resolve().parent / "fixtures" / "sm89_engines.lock.json"
     shutil.copy(lock, tmp_path / "engines.lock.json")
     required = ["t5gemma/t5gemma_fp16.trt", "sa3-m/dit_fp16.trt", "same-l/dec_fp16_chunkable_limiter.trt"]
     for rel in required:
